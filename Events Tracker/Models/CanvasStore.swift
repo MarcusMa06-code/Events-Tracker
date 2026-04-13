@@ -12,6 +12,10 @@ import Foundation
 final class CanvasStore: ObservableObject {
     @Published var config: CanvasConfig
     @Published private(set) var courses: [Course]
+    @Published private(set) var courseAssignmentsByCourseID: [Int: [CourseAssignment]]
+    @Published private(set) var loadingCourseAssignmentIDs: Set<Int>
+    @Published private(set) var courseModulesByCourseID: [Int: [CourseModule]]
+    @Published private(set) var loadingCourseModuleIDs: Set<Int>
     @Published private(set) var upcomingEvents: [UpcomingEvent]
     @Published private(set) var missingSubmissions: [MissingSubmission]
     @Published private(set) var profile: UserProfile?
@@ -39,12 +43,20 @@ final class CanvasStore: ObservableObject {
 
         if let snapshot = databaseManager.loadSnapshot() {
             courses = snapshot.courses
+            courseAssignmentsByCourseID = [:]
+            loadingCourseAssignmentIDs = []
+            courseModulesByCourseID = [:]
+            loadingCourseModuleIDs = []
             upcomingEvents = snapshot.upcomingEvents
             missingSubmissions = snapshot.missingSubmissions
             profile = snapshot.profile
             lastSyncedAt = snapshot.syncedAt
         } else {
             courses = []
+            courseAssignmentsByCourseID = [:]
+            loadingCourseAssignmentIDs = []
+            courseModulesByCourseID = [:]
+            loadingCourseModuleIDs = []
             upcomingEvents = []
             missingSubmissions = []
             profile = nil
@@ -88,6 +100,14 @@ final class CanvasStore: ObservableObject {
         courseName(for: selectedCourseID)
     }
 
+    var selectedCourse: Course? {
+        guard let selectedCourseID else {
+            return nil
+        }
+
+        return courses.first(where: { $0.id == selectedCourseID })
+    }
+
     var hostLabel: String {
         URL(string: config.normalizedBaseURL)?.host ?? config.normalizedBaseURL
     }
@@ -120,6 +140,10 @@ final class CanvasStore: ObservableObject {
         do {
             let snapshot = try await networkManager.fetchDashboardSnapshot(using: config)
             applySnapshot(snapshot)
+            courseAssignmentsByCourseID = [:]
+            loadingCourseAssignmentIDs = []
+            courseModulesByCourseID = [:]
+            loadingCourseModuleIDs = []
             try databaseManager.saveSnapshot(snapshot)
         } catch {
             errorMessage = error.localizedDescription
@@ -152,6 +176,10 @@ final class CanvasStore: ObservableObject {
 
     func clearLocalData() {
         courses = []
+        courseAssignmentsByCourseID = [:]
+        loadingCourseAssignmentIDs = []
+        courseModulesByCourseID = [:]
+        loadingCourseModuleIDs = []
         upcomingEvents = []
         missingSubmissions = []
         profile = nil
@@ -187,6 +215,114 @@ final class CanvasStore: ObservableObject {
         }
 
         return missingSubmissions.filter { $0.courseID == courseID }
+    }
+
+    func modules(for courseID: Int?) -> [CourseModule] {
+        guard let courseID else {
+            return []
+        }
+
+        return courseModulesByCourseID[courseID] ?? []
+    }
+
+    func assignments(for courseID: Int?) -> [CourseAssignment] {
+        guard let courseID else {
+            return []
+        }
+
+        return courseAssignmentsByCourseID[courseID] ?? []
+    }
+
+    func hasLoadedAssignments(for courseID: Int?) -> Bool {
+        guard let courseID else {
+            return false
+        }
+
+        return courseAssignmentsByCourseID[courseID] != nil
+    }
+
+    func isLoadingAssignments(for courseID: Int?) -> Bool {
+        guard let courseID else {
+            return false
+        }
+
+        return loadingCourseAssignmentIDs.contains(courseID)
+    }
+
+    func loadAssignmentsIfNeeded(for courseID: Int?) async {
+        guard
+            let courseID,
+            courseAssignmentsByCourseID[courseID] == nil,
+            !loadingCourseAssignmentIDs.contains(courseID)
+        else {
+            return
+        }
+
+        await loadAssignments(for: courseID)
+    }
+
+    func loadAssignments(for courseID: Int) async {
+        guard config.isComplete else {
+            errorMessage = CanvasServiceError.incompleteConfiguration.localizedDescription
+            return
+        }
+
+        loadingCourseAssignmentIDs.insert(courseID)
+
+        do {
+            let assignments = try await networkManager.fetchAssignments(courseID: courseID, using: config)
+            courseAssignmentsByCourseID[courseID] = assignments
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        loadingCourseAssignmentIDs.remove(courseID)
+    }
+
+    func hasLoadedModules(for courseID: Int?) -> Bool {
+        guard let courseID else {
+            return false
+        }
+
+        return courseModulesByCourseID[courseID] != nil
+    }
+
+    func isLoadingModules(for courseID: Int?) -> Bool {
+        guard let courseID else {
+            return false
+        }
+
+        return loadingCourseModuleIDs.contains(courseID)
+    }
+
+    func loadModulesIfNeeded(for courseID: Int?) async {
+        guard
+            let courseID,
+            courseModulesByCourseID[courseID] == nil,
+            !loadingCourseModuleIDs.contains(courseID)
+        else {
+            return
+        }
+
+        await loadModules(for: courseID)
+    }
+
+    func loadModules(for courseID: Int) async {
+        guard config.isComplete else {
+            errorMessage = CanvasServiceError.incompleteConfiguration.localizedDescription
+            return
+        }
+
+        loadingCourseModuleIDs.insert(courseID)
+
+        do {
+            let modules = try await networkManager.fetchModules(courseID: courseID, using: config)
+            courseModulesByCourseID[courseID] = modules
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        loadingCourseModuleIDs.remove(courseID)
     }
 
     private func applySnapshot(_ snapshot: CanvasSnapshot) {

@@ -77,6 +77,8 @@ final class NetworkManager {
         let queryItems = [
             URLQueryItem(name: "enrollment_state", value: "active"),
             URLQueryItem(name: "include[]", value: "term"),
+            URLQueryItem(name: "include[]", value: "total_scores"),
+            URLQueryItem(name: "include[]", value: "current_grading_period_scores"),
             URLQueryItem(name: "per_page", value: "100")
         ]
 
@@ -89,6 +91,51 @@ final class NetworkManager {
         return courses.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    func fetchAssignments(courseID: Int, using config: CanvasConfig) async throws -> [CourseAssignment] {
+        let queryItems = [
+            URLQueryItem(name: "include[]", value: "submission"),
+            URLQueryItem(name: "order_by", value: "due_at"),
+            URLQueryItem(name: "per_page", value: "100")
+        ]
+
+        let assignments: [CourseAssignment] = try await requestPaginatedArray(
+            path: "/api/v1/courses/\(courseID)/assignments",
+            queryItems: queryItems,
+            config: config
+        )
+
+        return assignments.sorted(by: Self.sortAssignments)
+    }
+
+    func fetchModules(courseID: Int, using config: CanvasConfig) async throws -> [CourseModule] {
+        let queryItems = [
+            URLQueryItem(name: "include[]", value: "items"),
+            URLQueryItem(name: "include[]", value: "content_details"),
+            URLQueryItem(name: "per_page", value: "100")
+        ]
+
+        var modules: [CourseModule] = try await requestPaginatedArray(
+            path: "/api/v1/courses/\(courseID)/modules",
+            queryItems: queryItems,
+            config: config
+        )
+
+        for index in modules.indices where modules[index].items == nil {
+            let items: [CourseModuleItem] = try await requestPaginatedArray(
+                path: "/api/v1/courses/\(courseID)/modules/\(modules[index].id)/items",
+                queryItems: [
+                    URLQueryItem(name: "include[]", value: "content_details"),
+                    URLQueryItem(name: "per_page", value: "100")
+                ],
+                config: config
+            )
+
+            modules[index] = modules[index].withItems(items)
+        }
+
+        return modules.sorted(by: Self.sortModules)
     }
 
     func fetchUpcomingEvents(using config: CanvasConfig) async throws -> [UpcomingEvent] {
@@ -281,6 +328,40 @@ final class NetworkManager {
     }
 
     private static func sortMissingSubmissions(_ lhs: MissingSubmission, _ rhs: MissingSubmission) -> Bool {
+        switch (lhs.dueAt, rhs.dueAt) {
+        case let (left?, right?):
+            if left != right {
+                return left < right
+            }
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            break
+        }
+
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
+    private static func sortModules(_ lhs: CourseModule, _ rhs: CourseModule) -> Bool {
+        switch (lhs.position, rhs.position) {
+        case let (left?, right?):
+            if left != right {
+                return left < right
+            }
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            break
+        }
+
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
+    private static func sortAssignments(_ lhs: CourseAssignment, _ rhs: CourseAssignment) -> Bool {
         switch (lhs.dueAt, rhs.dueAt) {
         case let (left?, right?):
             if left != right {

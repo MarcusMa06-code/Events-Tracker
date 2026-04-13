@@ -6,90 +6,50 @@
 //
 
 import Foundation
-import SQLite
 
-class DatabaseManager {
+final class DatabaseManager {
     static let shared = DatabaseManager()
-    private var db: Connection?
 
-    private let coursesTable = Table("courses")
-    private let assignmentsTable = Table("assignments")
-
-    private let id = Expression<Int>(value: 0)
-    private let name = Expression<String>(value: "")
-    private let dueAt = Expression<String?>(value: "")
-    private let courseID = Expression<Int>(value: 0)
+    private let cacheURL: URL
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
 
     private init() {
-        do {
-            let path = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
-            db = try Connection("\(path)/db.sqlite3")
-            createTables()
-        } catch {
-            print("Unable to open database. Error: \(error)")
-        }
+        let fileManager = FileManager.default
+        let baseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser
+        let appDirectory = baseDirectory.appendingPathComponent("EventsTracker", isDirectory: true)
+
+        try? fileManager.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+
+        cacheURL = appDirectory.appendingPathComponent("canvas-cache.json")
+
+        encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .millisecondsSince1970
+
+        decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .millisecondsSince1970
     }
 
-    private func createTables() {
-        do {
-            try db?.run(coursesTable.create(ifNotExists: true) { table in
-                table.column(id, primaryKey: true)
-                table.column(name)
-            })
-
-            try db?.run(assignmentsTable.create(ifNotExists: true) { table in
-                table.column(id, primaryKey: true)
-                table.column(name)
-                table.column(dueAt)
-                table.column(courseID)
-            })
-        } catch {
-            print("Unable to create tables. Error: \(error)")
-        }
+    func saveSnapshot(_ snapshot: CanvasSnapshot) throws {
+        let data = try encoder.encode(snapshot)
+        try data.write(to: cacheURL, options: .atomic)
     }
 
-    func saveCourses(_ courses: [Course]) {
-        do {
-            for course in courses {
-                try db?.run(coursesTable.insert(or: .replace, id <- course.id, name <- course.name))
-            }
-        } catch {
-            print("Unable to save courses. Error: \(error)")
+    func loadSnapshot() -> CanvasSnapshot? {
+        guard let data = try? Data(contentsOf: cacheURL) else {
+            return nil
         }
+
+        return try? decoder.decode(CanvasSnapshot.self, from: data)
     }
 
-    func saveAssignments(_ assignments: [Assignment], for courseID: Int) {
-        do {
-            for assignment in assignments {
-                try db?.run(assignmentsTable.insert(or: .replace, id <- assignment.id, name <- assignment.name, dueAt <- assignment.dueAt, self.courseID <- courseID))
-            }
-        } catch {
-            print("Unable to save assignments. Error: \(error)")
+    func clearSnapshot() throws {
+        guard FileManager.default.fileExists(atPath: cacheURL.path) else {
+            return
         }
-    }
 
-    func loadCourses() -> [Course] {
-        var courses = [Course]()
-        do {
-            for course in try db!.prepare(coursesTable) {
-                courses.append(Course(id: course[id], name: course[name]))
-            }
-        } catch {
-            print("Unable to load courses. Error: \(error)")
-        }
-        return courses
-    }
-
-    func loadAssignments(for courseID: Int) -> [Assignment] {
-        var assignments = [Assignment]()
-        do {
-            let query = assignmentsTable.filter(self.courseID == courseID)
-            for assignment in try db!.prepare(query) {
-                assignments.append(Assignment(id: assignment[id], name: assignment[name], dueAt: assignment[dueAt]))
-            }
-        } catch {
-            print("Unable to load assignments. Error: \(error)")
-        }
-        return assignments
+        try FileManager.default.removeItem(at: cacheURL)
     }
 }

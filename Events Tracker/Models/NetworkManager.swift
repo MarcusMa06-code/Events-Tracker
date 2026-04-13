@@ -7,72 +7,316 @@
 
 import Foundation
 
-class NetworkManager {
+enum CanvasServiceError: LocalizedError {
+    case incompleteConfiguration
+    case invalidBaseURL
+    case invalidResponse
+    case requestFailed(statusCode: Int, message: String)
+    case decodingFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .incompleteConfiguration:
+            return "Add your Canvas base URL and access token in Settings before syncing."
+        case .invalidBaseURL:
+            return "The Canvas base URL is invalid. Use your school's Canvas domain, for example https://school.instructure.com."
+        case .invalidResponse:
+            return "Canvas returned an invalid response."
+        case .requestFailed(let statusCode, let message):
+            if statusCode == 401 {
+                return "Canvas rejected the access token. Generate a fresh token and try again."
+            }
+
+            return "Canvas request failed (\(statusCode)): \(message)"
+        case .decodingFailed:
+            return "Canvas returned data in an unexpected format."
+        }
+    }
+}
+
+final class NetworkManager {
     static let shared = NetworkManager()
-    
-    private init() { }
-    
-    func fetchCourses(completion: @escaping (Result<[Course], Error>) -> Void) {
-        do {
-            let config = try CanvasConfigManager.shared.loadConfig()
-            guard let url = URL(string: "\(config.baseURL)") else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
-                return
-            }
-            var request = URLRequest(url: url)
-            request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
-            
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                if let error = error {
-                    completion(.failure(error))
-                    return
-                }
-                guard let data = data else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                    return
-                }
-                do {
-                    let courses = try JSONDecoder().decode([Course].self, from: data)
-                    DatabaseManager.shared.saveCourses(courses)
-                    completion(.success(courses))
-                } catch {
-                    completion(.failure(error))
-                }
-            }.resume()
-        } catch {
-            completion(.failure(error))
+
+    private let session: URLSession
+    private let decoder: JSONDecoder
+
+    private init(session: URLSession = .shared) {
+        self.session = session
+
+        decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            try Self.decodeCanvasDate(from: decoder)
         }
     }
-    
-    func fetchAssignments(courseID: Int, completion: @escaping (Result<[Assignment], Error>) -> Void) {
-        do {
-            let config = try CanvasConfigManager.shared.loadConfig()
-            guard let url = URL(string: "\(config.baseURL)") else {
-                completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL"])))
-                return
-            }
-            var request = URLRequest(url: url)
-            request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
-            
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                if let error = error {
-                    completion(.failure(error))
-                    return
-                }
-                guard let data = data else {
-                    completion(.failure(NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "No data"])))
-                    return
-                }
-                do {
-                    let assignments = try JSONDecoder().decode([Assignment].self, from: data)
-                    DatabaseManager.shared.saveAssignments(assignments, for: courseID)
-                    completion(.success(assignments))
-                } catch {
-                    completion(.failure(error))
-                }
-            }.resume()
-        } catch {
-            completion(.failure(error))
+
+    func fetchDashboardSnapshot(using config: CanvasConfig) async throws -> CanvasSnapshot {
+        guard config.isComplete else {
+            throw CanvasServiceError.incompleteConfiguration
+        }
+
+        async let coursesTask = fetchCourses(using: config)
+        async let upcomingEventsTask = fetchUpcomingEvents(using: config)
+        async let missingSubmissionsTask = fetchMissingSubmissions(using: config)
+        async let profileTask = fetchProfile(using: config)
+
+        let courses = try await coursesTask
+        let upcomingEvents = try await upcomingEventsTask
+        let missingSubmissions = try await missingSubmissionsTask
+        let profile = try? await profileTask
+
+        return CanvasSnapshot(
+            courses: courses,
+            upcomingEvents: upcomingEvents,
+            missingSubmissions: missingSubmissions,
+            profile: profile,
+            syncedAt: Date()
+        )
+    }
+
+    func fetchCourses(using config: CanvasConfig) async throws -> [Course] {
+        let queryItems = [
+            URLQueryItem(name: "enrollment_state", value: "active"),
+            URLQueryItem(name: "include[]", value: "term"),
+            URLQueryItem(name: "per_page", value: "100")
+        ]
+
+        let courses: [Course] = try await requestPaginatedArray(
+            path: "/api/v1/courses",
+            queryItems: queryItems,
+            config: config
+        )
+
+        return courses.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
+
+    func fetchUpcomingEvents(using config: CanvasConfig) async throws -> [UpcomingEvent] {
+        let queryItems = [
+            URLQueryItem(name: "per_page", value: "100")
+        ]
+
+        let events: [UpcomingEvent] = try await requestPaginatedArray(
+            path: "/api/v1/users/self/upcoming_events",
+            queryItems: queryItems,
+            config: config
+        )
+
+        let now = Date()
+        let lookaheadEndDate = Calendar.current.date(byAdding: .day, value: config.lookaheadDays, to: now)
+
+        return events
+            .filter { event in
+                guard let displayDate = event.displayDate else {
+                    return true
+                }
+
+                guard let lookaheadEndDate else {
+                    return true
+                }
+
+                return displayDate <= lookaheadEndDate
+            }
+            .sorted(by: Self.sortUpcomingEvents)
+    }
+
+    func fetchMissingSubmissions(using config: CanvasConfig) async throws -> [MissingSubmission] {
+        let queryItems = [
+            URLQueryItem(name: "filter[]", value: "submittable"),
+            URLQueryItem(name: "per_page", value: "100")
+        ]
+
+        let submissions: [MissingSubmission] = try await requestPaginatedArray(
+            path: "/api/v1/users/self/missing_submissions",
+            queryItems: queryItems,
+            config: config
+        )
+
+        return submissions.sorted(by: Self.sortMissingSubmissions)
+    }
+
+    func fetchProfile(using config: CanvasConfig) async throws -> UserProfile {
+        try await request(
+            path: "/api/v1/users/self/profile",
+            queryItems: [],
+            config: config,
+            responseType: UserProfile.self
+        )
+    }
+
+    private func request<T: Decodable>(
+        path: String,
+        queryItems: [URLQueryItem],
+        config: CanvasConfig,
+        responseType: T.Type
+    ) async throws -> T {
+        let url = try makeURL(path: path, queryItems: queryItems, config: config)
+        let (data, response) = try await session.data(for: authorizedRequest(url: url, token: config.trimmedToken))
+        try validate(response: response, data: data)
+
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw CanvasServiceError.decodingFailed
+        }
+    }
+
+    private func requestPaginatedArray<T: Decodable>(
+        path: String,
+        queryItems: [URLQueryItem],
+        config: CanvasConfig
+    ) async throws -> [T] {
+        var url = try makeURL(path: path, queryItems: queryItems, config: config)
+        var combinedResults: [T] = []
+
+        while true {
+            let (data, response) = try await session.data(for: authorizedRequest(url: url, token: config.trimmedToken))
+            try validate(response: response, data: data)
+
+            do {
+                combinedResults += try decoder.decode([T].self, from: data)
+            } catch {
+                throw CanvasServiceError.decodingFailed
+            }
+
+            guard
+                let httpResponse = response as? HTTPURLResponse,
+                let nextPageURL = nextPageURL(from: httpResponse.value(forHTTPHeaderField: "Link"))
+            else {
+                break
+            }
+
+            url = nextPageURL
+        }
+
+        return combinedResults
+    }
+
+    private func makeURL(path: String, queryItems: [URLQueryItem], config: CanvasConfig) throws -> URL {
+        guard var components = URLComponents(string: config.normalizedBaseURL) else {
+            throw CanvasServiceError.invalidBaseURL
+        }
+
+        var basePath = components.path.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
+        if basePath.hasSuffix("/api/v1") {
+            basePath = String(basePath.dropLast("/api/v1".count))
+        }
+
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        components.path = basePath + normalizedPath
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+
+        guard let url = components.url else {
+            throw CanvasServiceError.invalidBaseURL
+        }
+
+        return url
+    }
+
+    private func authorizedRequest(url: URL, token: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    private func validate(response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CanvasServiceError.invalidResponse
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = (String(data: data, encoding: .utf8) ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw CanvasServiceError.requestFailed(
+                statusCode: httpResponse.statusCode,
+                message: message.isEmpty ? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode) : message
+            )
+        }
+    }
+
+    private func nextPageURL(from linkHeader: String?) -> URL? {
+        guard let linkHeader else {
+            return nil
+        }
+
+        let parts = linkHeader.split(separator: ",")
+
+        for part in parts {
+            let segments = part.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard
+                let urlSegment = segments.first,
+                segments.contains(where: { $0.contains("rel=\"next\"") })
+            else {
+                continue
+            }
+
+            let trimmedURL = urlSegment
+                .replacingOccurrences(of: "<", with: "")
+                .replacingOccurrences(of: ">", with: "")
+
+            if let url = URL(string: trimmedURL) {
+                return url
+            }
+        }
+
+        return nil
+    }
+
+    private static func sortUpcomingEvents(_ lhs: UpcomingEvent, _ rhs: UpcomingEvent) -> Bool {
+        switch (lhs.displayDate, rhs.displayDate) {
+        case let (left?, right?):
+            if left != right {
+                return left < right
+            }
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            break
+        }
+
+        return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+    }
+
+    private static func sortMissingSubmissions(_ lhs: MissingSubmission, _ rhs: MissingSubmission) -> Bool {
+        switch (lhs.dueAt, rhs.dueAt) {
+        case let (left?, right?):
+            if left != right {
+                return left < right
+            }
+        case (.some, .none):
+            return true
+        case (.none, .some):
+            return false
+        case (.none, .none):
+            break
+        }
+
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
+    private static func decodeCanvasDate(from decoder: Decoder) throws -> Date {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+
+        if let date = fractionalSecondDateFormatter.date(from: value) ?? internetDateFormatter.date(from: value) {
+            return date
+        }
+
+        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid Canvas date: \(value)")
+    }
+
+    private static let fractionalSecondDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let internetDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 }

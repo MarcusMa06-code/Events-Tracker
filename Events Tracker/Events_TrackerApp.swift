@@ -9,10 +9,16 @@ import SwiftUI
 
 @main
 struct Events_TrackerApp: App {
+    @StateObject private var store = CanvasStore()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(store)
+                .task {
+                    await store.refreshIfNeeded()
+                }
         }
-        .defaultSize(width: 1000, height: 800)
+        .defaultSize(width: 1160, height: 860)
     }
 }

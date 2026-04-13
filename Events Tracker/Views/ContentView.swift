@@ -7,39 +7,100 @@
 
 import SwiftUI
 
+private enum AppSection: String, CaseIterable, Identifiable {
+    case dashboard = "Dashboard"
+    case events = "Events"
+    case profile = "Profile"
+    case settings = "Settings"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .dashboard:
+            return "rectangle.3.group"
+        case .events:
+            return "calendar"
+        case .profile:
+            return "person.crop.circle"
+        case .settings:
+            return "gearshape"
+        }
+    }
+}
+
 struct ContentView: View {
-    @State private var selectedItem: String? = "Home"
-    
+    @EnvironmentObject private var store: CanvasStore
+    @State private var selectedSection: AppSection? = .dashboard
+
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedItem) {
-                Text("Home").tag("Home").font(.title2).padding(.vertical, 3)
-                Text("Events").tag("Events").font(.title2)
-                    .padding(.vertical, 3)
-                Text("Profile").tag("Profile").font(.title2)
-                    .padding(.vertical, 3)
-                Text("Settings").tag("Settings").font(.title2)
-                    .padding(.vertical, 3)
+            List(selection: $selectedSection) {
+                ForEach(AppSection.allCases) { section in
+                    Label(section.rawValue, systemImage: section.systemImage)
+                        .tag(section)
+                }
             }
-            .frame(minWidth: 200, idealWidth: 200, maxWidth: 250)
-            .navigationTitle("Menu")
+            .navigationTitle("Events Tracker")
+            .frame(minWidth: 220, idealWidth: 220, maxWidth: 250)
         } detail: {
-            switch selectedItem {
-                case "Home":
-                HomeView()
-                case "Events":
-                EventsView()
-            case "Profile":
-                ProfileView()
-            case "Settings":
-                SettingsView()
-            default:
-                HomeView()
+            VStack(spacing: 0) {
+                if let errorMessage = store.errorMessage {
+                    Text(errorMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(Color.red.opacity(0.10))
+                }
+
+                Group {
+                    switch selectedSection {
+                    case .dashboard:
+                        HomeView()
+                    case .events:
+                        EventsView()
+                    case .profile:
+                        ProfileView()
+                    case .settings:
+                        SettingsView()
+                    case nil:
+                        HomeView()
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        Task {
+                            await store.refresh()
+                        }
+                    } label: {
+                        if store.isSyncing {
+                            ProgressView()
+                        } else {
+                            Label("Sync", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .disabled(!store.isConfigured || store.isSyncing)
+                }
+
+                ToolbarItem(placement: .automatic) {
+                    if let lastSyncDescription = store.lastSyncDescription {
+                        Text("Last synced \(lastSyncDescription)")
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
     }
 }
 
-#Preview {
-    ContentView()
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
+            .environmentObject(CanvasStore())
+    }
 }

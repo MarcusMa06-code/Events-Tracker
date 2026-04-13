@@ -7,29 +7,39 @@
 
 import Foundation
 
-class CanvasConfigManager {
+final class CanvasConfigManager {
     static let shared = CanvasConfigManager()
-    
-    private init() { }
-    
-    private let configFileName = "canvasConfig.json"
-    
+
+    private let configURL: URL
+    private let encoder: JSONEncoder
+    private let decoder: JSONDecoder
+
+    private init() {
+        let fileManager = FileManager.default
+        let baseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser
+        let appDirectory = baseDirectory.appendingPathComponent("EventsTracker", isDirectory: true)
+
+        try? fileManager.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+
+        configURL = appDirectory.appendingPathComponent("canvas-config.json")
+
+        encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+        decoder = JSONDecoder()
+    }
+
     func saveConfig(_ config: CanvasConfig) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
         let data = try encoder.encode(config)
-        let url = try getConfigFileURL()
-        try data.write(to: url)
+        try data.write(to: configURL, options: .atomic)
     }
-    
-    func loadConfig() throws -> CanvasConfig {
-        let url = try getConfigFileURL()
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode(CanvasConfig.self, from: data)
-    }
-    
-    private func getConfigFileURL() throws -> URL {
-        let homeDirectory = FileManager.default.homeDirectoryForCurrentUser
-        return homeDirectory.appendingPathComponent(configFileName)
+
+    func loadConfig() -> CanvasConfig {
+        guard let data = try? Data(contentsOf: configURL) else {
+            return CanvasConfig()
+        }
+
+        return (try? decoder.decode(CanvasConfig.self, from: data)) ?? CanvasConfig()
     }
 }

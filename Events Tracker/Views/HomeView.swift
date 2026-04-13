@@ -8,75 +8,110 @@
 import SwiftUI
 
 struct HomeView: View {
-    @State private var courses: [Course] = []
+    @EnvironmentObject private var store: CanvasStore
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
 
     var body: some View {
-        HStack(alignment: .top, spacing: 24) {
-            VStack(alignment: .leading, spacing: 24) {
-                Section(header: Text("Your Courses")
-                    .font(.title2)
-                    .bold()
-                    .padding(.bottom, 4)) {
-                        ForEach(courses, id: \.id) { course in
-                            Button(action: {
-                                // handle course selection
-                            }) {
-                                Text(course.name)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding()
-                            }
-                        }
+        if !store.isConfigured {
+            SetupPromptView(
+                title: "Connect Canvas",
+                message: "Save your Canvas base URL and personal access token in Settings, then sync to build your dashboard."
+            )
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("Dashboard")
+                        .font(.largeTitle.weight(.semibold))
+
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        SummaryCard(
+                            title: "Courses",
+                            value: "\(store.courses.count)",
+                            detail: store.hostLabel.isEmpty ? "Connected Canvas workspace" : store.hostLabel,
+                            systemImage: "books.vertical",
+                            tint: .blue
+                        )
+
+                        SummaryCard(
+                            title: "Due This Week",
+                            value: "\(store.eventsDueThisWeekCount)",
+                            detail: "Upcoming assignments and course events in the next 7 days.",
+                            systemImage: "calendar.badge.clock",
+                            tint: .green
+                        )
+
+                        SummaryCard(
+                            title: "Missing Work",
+                            value: "\(store.missingSubmissions.count)",
+                            detail: "Past-due assignments with no submission recorded.",
+                            systemImage: "exclamationmark.circle",
+                            tint: .red
+                        )
+
+                        SummaryCard(
+                            title: "Next Deadline",
+                            value: store.nextUpcomingEvent.flatMap { DisplayFormatters.relativeString(date: $0.displayDate) } ?? "Clear",
+                            detail: store.nextUpcomingEvent?.title ?? "No upcoming deadlines found.",
+                            systemImage: "flag",
+                            tint: .orange
+                        )
                     }
-            }
-            
-            Divider()
-            
-            VStack(alignment: .leading, spacing: 24) {
-                Section(header: Text("Upcoming Events")
-                    .font(.title2)
-                    .bold()
-                    .padding(.bottom, 4)) {
-                        // Placeholder for upcoming events
-                        ForEach(courses) { assignment in
-                            Button(action: {
-                                // handle assignment selection
-                            }) {
-                                HStack {
-                                    Text("\(assignment)")
-                                        .bold()
-                                    Spacer()
-                                    Text("\(assignment)")
-                                        .foregroundColor(.red)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Needs Attention")
+                            .font(.title2.weight(.semibold))
+
+                        if store.missingSubmissions.isEmpty {
+                            Text("Nothing overdue right now.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(Array(store.missingSubmissions.prefix(5))) { submission in
+                                MissingSubmissionRow(
+                                    submission: submission,
+                                    courseName: store.courseName(for: submission.courseID)
+                                )
+
+                                if submission.id != store.missingSubmissions.prefix(5).last?.id {
+                                    Divider()
                                 }
-                                .padding()
                             }
                         }
                     }
-            }
-        }
-        .padding()
-        .onAppear(perform: loadCourses)
-    }
 
-    private func loadCourses() {
-        self.courses = DatabaseManager.shared.loadCourses()
-        fetchCourses()
-    }
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Coming Up")
+                            .font(.title2.weight(.semibold))
 
-    private func fetchCourses() {
-        NetworkManager.shared.fetchCourses { result in
-            switch result {
-            case .success(let courses):
-                DispatchQueue.main.async {
-                    self.courses = courses
+                        if store.upcomingEvents.isEmpty {
+                            Text("No upcoming items yet. Sync again after Canvas has upcoming work scheduled.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(Array(store.upcomingEvents.prefix(8))) { event in
+                                UpcomingEventRow(
+                                    event: event,
+                                    courseName: store.courseName(for: event.courseID)
+                                )
+
+                                if event.id != store.upcomingEvents.prefix(8).last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
                 }
-            case .failure(let error):
-                print("Failed to fetch courses: \(error)")
+                .padding(24)
             }
         }
     }
 }
 
-#Preview {
-    HomeView()
+struct HomeView_Previews: PreviewProvider {
+    static var previews: some View {
+        HomeView()
+            .environmentObject(CanvasStore())
+    }
 }

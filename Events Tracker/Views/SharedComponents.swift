@@ -47,6 +47,18 @@ enum DisplayFormatters {
 
         return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
+
+    static func formattedPoints(_ value: Double?) -> String? {
+        guard let value else {
+            return nil
+        }
+
+        if value.rounded() == value {
+            return "\(Int(value))"
+        }
+
+        return String(format: "%.1f", value)
+    }
 }
 
 struct SetupPromptView: View {
@@ -71,22 +83,23 @@ struct SummaryCard: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .foregroundStyle(tint)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .foregroundStyle(tint)
+                    .font(.subheadline)
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
 
             Text(value)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-
-            Text(detail)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .font(.system(size: 24, weight: .semibold, design: .rounded))
+                .foregroundStyle(.primary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(tint.opacity(0.10))
+        .padding(16)
+        .background(Color.primary.opacity(0.04))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
@@ -121,13 +134,6 @@ struct UpcomingEventRow: View {
                         Text(courseName)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                    }
-
-                    if let details = event.details, !details.isEmpty {
-                        Text(details)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
                     }
                 }
 
@@ -205,6 +211,232 @@ struct MissingSubmissionRow: View {
                 Spacer()
 
                 if let url = submission.htmlURL {
+                    Link("Open in Canvas", destination: url)
+                        .font(.caption.weight(.semibold))
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+struct CourseListRow: View {
+    let course: Course
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(course.name)
+                .lineLimit(2)
+
+            HStack(spacing: 8) {
+                if let courseCode = course.courseCode, !courseCode.isEmpty {
+                    Text(courseCode)
+                        .font(.caption)
+                }
+
+                if let termName = course.enrollmentTerm?.name, !termName.isEmpty {
+                    Text(termName)
+                        .font(.caption)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct CourseModuleCard: View {
+    let module: CourseModule
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(module.name)
+                        .font(.title3.weight(.semibold))
+
+                    HStack(spacing: 10) {
+                        if module.visibleItemCount > 0 {
+                            Label("\(module.visibleItemCount) items", systemImage: "list.bullet")
+                        }
+
+                        if let unlockAt = module.unlockAt {
+                            Label(DisplayFormatters.formatted(date: unlockAt), systemImage: "lock.open")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if let workflowState = module.workflowState, !workflowState.isEmpty {
+                    PillBadge(text: workflowState.capitalized, tint: .blue)
+                }
+            }
+
+            if module.sortedItems.isEmpty {
+                Text("Canvas did not return any visible module items for this module.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(module.sortedItems) { item in
+                    CourseModuleItemRow(item: item)
+
+                    if item.id != module.sortedItems.last?.id {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct CourseModuleItemRow: View {
+    let item: CourseModuleItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: item.systemImageName)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(item.title)
+                        .font(.headline)
+
+                    HStack(spacing: 8) {
+                        PillBadge(text: item.itemTypeLabel, tint: .green)
+
+                        if item.isLockedForUser {
+                            PillBadge(text: "Locked", tint: .red)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                if let url = item.actionableURL {
+                    Link("Open", destination: url)
+                        .font(.caption.weight(.semibold))
+                }
+            }
+            .padding(.leading, CGFloat(item.indent ?? 0) * 20)
+
+            HStack(spacing: 12) {
+                if let dueAt = item.dueAt {
+                    Label(DisplayFormatters.formatted(date: dueAt), systemImage: "clock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let pointsDescription = item.pointsDescription {
+                    Label(pointsDescription, systemImage: "number")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let lockExplanation = item.contentDetails?.lockExplanation, !lockExplanation.isEmpty {
+                    Text(lockExplanation)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .padding(.leading, CGFloat(item.indent ?? 0) * 20 + 30)
+        }
+        .padding(.vertical, 6)
+    }
+}
+
+private extension CourseAssignmentStatus {
+    var tint: Color {
+        switch self {
+        case .missing, .late:
+            return .red
+        case .graded:
+            return .green
+        case .submitted, .excused:
+            return .blue
+        case .upcoming:
+            return .orange
+        case .unscheduled:
+            return .secondary
+        }
+    }
+}
+
+struct CourseAssignmentRow: View {
+    let assignment: CourseAssignment
+    let courseName: String?
+    var showCourseName = false
+
+    private var metadataText: String? {
+        if let scoreDescription = assignment.scoreDescription {
+            return "Score \(scoreDescription)"
+        }
+
+        if let pointsDescription = assignment.pointsDescription {
+            return "\(pointsDescription) pts possible"
+        }
+
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(assignment.name)
+                        .font(.headline)
+
+                    if showCourseName, let courseName {
+                        Text(courseName)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    PillBadge(text: assignment.status.rawValue, tint: assignment.status.tint)
+
+                    if assignment.submission?.late == true, assignment.status != .late {
+                        PillBadge(text: "Late", tint: .red)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                if let relative = DisplayFormatters.relativeString(date: assignment.dueAt) {
+                    Text(relative)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(DisplayFormatters.formatted(date: assignment.dueAt))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let metadataText {
+                    Text("·")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                    Text(metadataText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if let url = assignment.htmlURL {
                     Link("Open in Canvas", destination: url)
                         .font(.caption.weight(.semibold))
                 }

@@ -38,6 +38,7 @@ struct Course: Codable, Identifiable, Hashable {
     let workflowState: String?
     let htmlURL: URL?
     let enrollmentTerm: EnrollmentTerm?
+    let enrollments: [CourseEnrollment]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -46,6 +47,249 @@ struct Course: Codable, Identifiable, Hashable {
         case workflowState = "workflow_state"
         case htmlURL = "html_url"
         case enrollmentTerm = "term"
+        case enrollments
+    }
+
+    var studentEnrollment: CourseEnrollment? {
+        if let studentEnrollment = enrollments?.first(where: { $0.isStudentEnrollment }) {
+            return studentEnrollment
+        }
+
+        return enrollments?.first
+    }
+}
+
+struct CourseEnrollment: Codable, Hashable {
+    let type: String?
+    let role: String?
+    let enrollmentState: String?
+    let computedCurrentScore: Double?
+    let computedCurrentGrade: String?
+    let computedFinalScore: Double?
+    let computedFinalGrade: String?
+    let currentGradingPeriodTitle: String?
+    let hasGradingPeriods: Bool?
+    let currentPeriodComputedCurrentScore: Double?
+    let currentPeriodComputedCurrentGrade: String?
+    let currentPeriodComputedFinalScore: Double?
+    let currentPeriodComputedFinalGrade: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case role
+        case enrollmentState = "enrollment_state"
+        case computedCurrentScore = "computed_current_score"
+        case computedCurrentGrade = "computed_current_grade"
+        case computedFinalScore = "computed_final_score"
+        case computedFinalGrade = "computed_final_grade"
+        case currentGradingPeriodTitle = "current_grading_period_title"
+        case hasGradingPeriods = "has_grading_periods"
+        case currentPeriodComputedCurrentScore = "current_period_computed_current_score"
+        case currentPeriodComputedCurrentGrade = "current_period_computed_current_grade"
+        case currentPeriodComputedFinalScore = "current_period_computed_final_score"
+        case currentPeriodComputedFinalGrade = "current_period_computed_final_grade"
+    }
+
+    var isStudentEnrollment: Bool {
+        let descriptor = [type, role]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: " ")
+
+        return descriptor.localizedCaseInsensitiveContains("student")
+    }
+
+    var displayCurrentScore: String? {
+        Self.formattedPercentage(computedCurrentScore)
+    }
+
+    var displayCurrentGrade: String? {
+        normalizedGrade(computedCurrentGrade) ?? Self.formattedPercentage(computedCurrentScore)
+    }
+
+    var displayFinalScore: String? {
+        Self.formattedPercentage(computedFinalScore)
+    }
+
+    var displayFinalGrade: String? {
+        normalizedGrade(computedFinalGrade) ?? Self.formattedPercentage(computedFinalScore)
+    }
+
+    var displayCurrentPeriodScore: String? {
+        Self.formattedPercentage(currentPeriodComputedCurrentScore)
+    }
+
+    var displayCurrentPeriodGrade: String? {
+        normalizedGrade(currentPeriodComputedCurrentGrade) ?? Self.formattedPercentage(currentPeriodComputedCurrentScore)
+    }
+
+    private func normalizedGrade(_ grade: String?) -> String? {
+        guard let trimmedGrade = grade?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmedGrade.isEmpty else {
+            return nil
+        }
+
+        return trimmedGrade
+    }
+
+    private static func formattedPercentage(_ value: Double?) -> String? {
+        guard let value else {
+            return nil
+        }
+
+        if value.rounded() == value {
+            return "\(Int(value))%"
+        }
+
+        return String(format: "%.1f%%", value)
+    }
+}
+
+struct CourseModule: Codable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let position: Int?
+    let workflowState: String?
+    let unlockAt: Date?
+    let itemsCount: Int?
+    let published: Bool?
+    var items: [CourseModuleItem]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case position
+        case workflowState = "workflow_state"
+        case unlockAt = "unlock_at"
+        case itemsCount = "items_count"
+        case published
+        case items
+    }
+
+    var sortedItems: [CourseModuleItem] {
+        (items ?? []).sorted { lhs, rhs in
+            switch (lhs.position, rhs.position) {
+            case let (left?, right?):
+                if left != right {
+                    return left < right
+                }
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                break
+            }
+
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
+    }
+
+    var visibleItemCount: Int {
+        itemsCount ?? sortedItems.count
+    }
+
+    func withItems(_ items: [CourseModuleItem]) -> CourseModule {
+        var copy = self
+        copy.items = items
+        return copy
+    }
+}
+
+struct CourseModuleItem: Codable, Identifiable, Hashable {
+    let id: Int
+    let moduleID: Int?
+    let position: Int?
+    let title: String
+    let indent: Int?
+    let type: String?
+    let contentID: Int?
+    let htmlURL: URL?
+    let apiURL: URL?
+    let pageURL: String?
+    let published: Bool?
+    let contentDetails: ModuleItemContentDetails?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case moduleID = "module_id"
+        case position
+        case title
+        case indent
+        case type
+        case contentID = "content_id"
+        case htmlURL = "html_url"
+        case apiURL = "url"
+        case pageURL = "page_url"
+        case published
+        case contentDetails = "content_details"
+    }
+
+    var itemTypeLabel: String {
+        type ?? "Item"
+    }
+
+    var systemImageName: String {
+        switch type {
+        case "Assignment":
+            return "doc.text"
+        case "Discussion":
+            return "bubble.left.and.bubble.right"
+        case "Page":
+            return "doc.plaintext"
+        case "File":
+            return "paperclip"
+        case "Quiz":
+            return "checklist"
+        case "SubHeader":
+            return "text.line.first.and.arrowtriangle.forward"
+        case "ExternalUrl", "ExternalTool":
+            return "link"
+        default:
+            return "circle.dashed"
+        }
+    }
+
+    var actionableURL: URL? {
+        contentDetails?.htmlURL ?? htmlURL
+    }
+
+    var dueAt: Date? {
+        contentDetails?.dueAt
+    }
+
+    var isLockedForUser: Bool {
+        contentDetails?.lockedForUser ?? false
+    }
+
+    var pointsDescription: String? {
+        guard let points = contentDetails?.pointsPossible else {
+            return nil
+        }
+
+        if points.rounded() == points {
+            return "\(Int(points)) pts"
+        }
+
+        return String(format: "%.1f pts", points)
+    }
+}
+
+struct ModuleItemContentDetails: Codable, Hashable {
+    let pointsPossible: Double?
+    let dueAt: Date?
+    let unlockAt: Date?
+    let lockAt: Date?
+    let lockedForUser: Bool?
+    let lockExplanation: String?
+    let htmlURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case pointsPossible = "points_possible"
+        case dueAt = "due_at"
+        case unlockAt = "unlock_at"
+        case lockAt = "lock_at"
+        case lockedForUser = "locked_for_user"
+        case lockExplanation = "lock_explanation"
+        case htmlURL = "html_url"
     }
 }
 
@@ -80,6 +324,194 @@ struct CanvasAssignment: Codable, Hashable {
         case courseID = "course_id"
         case htmlURL = "html_url"
         case pointsPossible = "points_possible"
+    }
+}
+
+enum CourseAssignmentStatus: String, Codable, Hashable {
+    case missing = "Missing"
+    case late = "Late"
+    case graded = "Graded"
+    case submitted = "Submitted"
+    case upcoming = "Upcoming"
+    case unscheduled = "No Due Date"
+    case excused = "Excused"
+}
+
+struct AssignmentSubmission: Codable, Hashable {
+    let submittedAt: Date?
+    let gradedAt: Date?
+    let score: Double?
+    let grade: String?
+    let workflowState: String?
+    let late: Bool?
+    let missing: Bool?
+    let excused: Bool?
+    let submissionType: String?
+    let attempt: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case submittedAt = "submitted_at"
+        case gradedAt = "graded_at"
+        case score
+        case grade
+        case workflowState = "workflow_state"
+        case late
+        case missing
+        case excused
+        case submissionType = "submission_type"
+        case attempt
+    }
+
+    var isSubmitted: Bool {
+        if excused == true {
+            return true
+        }
+
+        switch workflowState {
+        case "submitted", "graded", "pending_review", "complete":
+            return true
+        default:
+            return submittedAt != nil
+        }
+    }
+
+    var isGraded: Bool {
+        gradedAt != nil || score != nil || workflowState == "graded"
+    }
+}
+
+struct CourseAssignment: Codable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let details: String?
+    let dueAt: Date?
+    let unlockAt: Date?
+    let lockAt: Date?
+    let htmlURL: URL?
+    let courseID: Int?
+    let pointsPossible: Double?
+    let submissionTypes: [String]?
+    let hasSubmittedSubmissions: Bool?
+    let published: Bool?
+    let gradingType: String?
+    let submission: AssignmentSubmission?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case details = "description"
+        case dueAt = "due_at"
+        case unlockAt = "unlock_at"
+        case lockAt = "lock_at"
+        case htmlURL = "html_url"
+        case courseID = "course_id"
+        case pointsPossible = "points_possible"
+        case submissionTypes = "submission_types"
+        case hasSubmittedSubmissions = "has_submitted_submissions"
+        case published
+        case gradingType = "grading_type"
+        case submission
+    }
+
+    var status: CourseAssignmentStatus {
+        if submission?.excused == true {
+            return .excused
+        }
+
+        if submission?.missing == true {
+            return .missing
+        }
+
+        if submission?.late == true, submission?.isGraded != true {
+            return .late
+        }
+
+        if submission?.isGraded == true {
+            return .graded
+        }
+
+        if submission?.isSubmitted == true || hasSubmittedSubmissions == true {
+            return .submitted
+        }
+
+        guard let dueAt else {
+            return .unscheduled
+        }
+
+        return dueAt < Date() ? .missing : .upcoming
+    }
+
+    var isCompleted: Bool {
+        switch status {
+        case .graded, .submitted, .excused:
+            return true
+        case .missing, .late, .upcoming, .unscheduled:
+            return false
+        }
+    }
+
+    var isUpcoming: Bool {
+        guard let dueAt else {
+            return false
+        }
+
+        return !isCompleted && dueAt >= Date()
+    }
+
+    var summaryText: String? {
+        guard let details, !details.isEmpty else {
+            return nil
+        }
+
+        let strippedText = details
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return strippedText.isEmpty ? nil : strippedText
+    }
+
+    var pointsDescription: String? {
+        Self.formattedPoints(pointsPossible)
+    }
+
+    var scoreDescription: String? {
+        guard let score = submission?.score else {
+            return nil
+        }
+
+        let formattedScore = Self.formattedPoints(score) ?? "\(score)"
+
+        if let pointsDescription {
+            return "\(formattedScore) / \(pointsDescription)"
+        }
+
+        return formattedScore
+    }
+
+    var gradeDescription: String? {
+        guard let grade = submission?.grade?.trimmingCharacters(in: .whitespacesAndNewlines), !grade.isEmpty else {
+            return nil
+        }
+
+        return grade
+    }
+
+    var recentActivityDate: Date? {
+        submission?.gradedAt ?? submission?.submittedAt ?? dueAt
+    }
+
+    private static func formattedPoints(_ value: Double?) -> String? {
+        guard let value else {
+            return nil
+        }
+
+        if value.rounded() == value {
+            return "\(Int(value))"
+        }
+
+        return String(format: "%.1f", value)
     }
 }
 

@@ -8,15 +8,16 @@
 
 import SwiftUI
 
-private enum AppSection: String, Hashable {
-    case dashboard = "Dashboard"
-    case overdue = "Overdue"
-    case today = "Today"
-    case events = "All Events"
-    case assignments = "Assignments"
-    case courses = "Courses"
-    case profile = "Profile"
-    case settings = "Settings"
+private enum AppSection: Hashable {
+    case dashboard
+    case overdue
+    case today
+    case events
+    case assignments
+    case courses
+    case profile
+    case settings
+    case courseFilter(Int)   // course-specific filtered dashboard
 }
 
 struct ContentView: View {
@@ -32,8 +33,8 @@ struct ContentView: View {
                 .navigationTitle("")
         } detail: {
             VStack(spacing: 0) {
-                if let errorMessage = store.errorMessage {
-                    Text(errorMessage)
+                if let msg = store.errorMessage {
+                    Text(msg)
                         .font(.subheadline)
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -44,8 +45,12 @@ struct ContentView: View {
 
                 Group {
                     switch selectedSection {
-                    case .dashboard, .overdue, .today, nil:
+                    case .dashboard, .courseFilter, nil:
                         HomeView()
+                    case .overdue:
+                        FocusedTaskView(mode: .overdue)
+                    case .today:
+                        FocusedTaskView(mode: .today)
                     case .events:
                         EventsView()
                     case .assignments:
@@ -75,6 +80,17 @@ struct ContentView: View {
                 }
             }
         }
+        // Sync selectedCourseID with sidebar course selection
+        .onChange(of: selectedSection) { _, newSection in
+            switch newSection {
+            case .courseFilter(let id):
+                store.selectedCourseID = id
+            case .dashboard, .overdue, .today, .events:
+                store.selectedCourseID = nil
+            default:
+                break
+            }
+        }
     }
 }
 
@@ -84,6 +100,7 @@ private struct DesignedSidebar: View {
     @Binding var selectedSection: AppSection?
     let et: ETColors
     @EnvironmentObject private var store: CanvasStore
+    @State private var showCourseVisibility = false
 
     var body: some View {
         List(selection: $selectedSection) {
@@ -108,37 +125,40 @@ private struct DesignedSidebar: View {
                            badge: nil, badgeColor: nil, et: et)
                     .tag(AppSection.events)
             } header: {
-                Text("Inbox")
-                    .font(.system(size: 10.5, weight: .bold))
-                    .foregroundStyle(et.textFaint)
-                    .kerning(0.5)
-                    .textCase(.uppercase)
+                sectionHeader("Inbox")
             }
 
             // Courses
             Section {
-                SidebarRow(label: "All Courses", systemImage: "circle",
-                           badge: nil, badgeColor: nil, et: et, courseColor: nil)
-                    .tag(AppSection.courses)
-                    .simultaneousGesture(TapGesture().onEnded {
-                        store.selectedCourseID = nil
-                    })
-
-                ForEach(store.courses) { course in
-                    CourseRow(course: course, et: et,
-                              isSelected: store.selectedCourseID == course.id)
-                        .tag(AppSection.dashboard)
-                        .onTapGesture {
-                            store.selectedCourseID = course.id
-                            selectedSection = .dashboard
+                // "All Courses" row — tap opens visibility sheet
+                Button {
+                    showCourseVisibility = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(et.accent)
+                            .frame(width: 16)
+                        Text("All Courses")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color.primary)
+                        Spacer()
+                        if !store.hiddenCourseIDs.isEmpty {
+                            Text("\(store.hiddenCourseIDs.count) hidden")
+                                .font(.system(size: 11))
+                                .foregroundStyle(et.textFaint)
                         }
+                    }
+                }
+                .buttonStyle(.plain)
+                .tag(AppSection.courses)
+
+                ForEach(store.visibleCourses) { course in
+                    CourseRow(course: course, et: et)
+                        .tag(AppSection.courseFilter(course.id))
                 }
             } header: {
-                Text("Courses")
-                    .font(.system(size: 10.5, weight: .bold))
-                    .foregroundStyle(et.textFaint)
-                    .kerning(0.5)
-                    .textCase(.uppercase)
+                sectionHeader("Courses")
             }
 
             // More
@@ -153,11 +173,7 @@ private struct DesignedSidebar: View {
                            badge: nil, badgeColor: nil, et: et)
                     .tag(AppSection.settings)
             } header: {
-                Text("More")
-                    .font(.system(size: 10.5, weight: .bold))
-                    .foregroundStyle(et.textFaint)
-                    .kerning(0.5)
-                    .textCase(.uppercase)
+                sectionHeader("More")
             }
         }
         .listStyle(.sidebar)
@@ -172,6 +188,17 @@ private struct DesignedSidebar: View {
                     .padding(.vertical, 10)
             }
         }
+        .sheet(isPresented: $showCourseVisibility) {
+            CourseVisibilitySheet(et: et)
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10.5, weight: .bold))
+            .foregroundStyle(et.textFaint)
+            .kerning(0.5)
+            .textCase(.uppercase)
     }
 }
 
@@ -204,7 +231,6 @@ private struct SidebarRow: View {
 private struct CourseRow: View {
     let course: Course
     let et: ETColors
-    let isSelected: Bool
 
     var body: some View {
         HStack(spacing: 8) {
@@ -212,10 +238,81 @@ private struct CourseRow: View {
                 .fill(courseColor(for: course))
                 .frame(width: 9, height: 9)
             Text(course.courseCode ?? course.name)
-                .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
+                .font(.system(size: 12.5, weight: .medium))
                 .lineLimit(1)
             Spacer()
         }
+    }
+}
+
+// MARK: - Course Visibility Sheet
+
+private struct CourseVisibilitySheet: View {
+    let et: ETColors
+    @EnvironmentObject private var store: CanvasStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sidebar Courses")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("Choose which courses appear in the sidebar")
+                        .font(.system(size: 12))
+                        .foregroundStyle(et.textMuted)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            .padding(20)
+
+            Divider()
+
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(store.courses) { course in
+                        let isHidden = store.hiddenCourseIDs.contains(course.id)
+                        Button {
+                            store.toggleCourseVisibility(course.id)
+                        } label: {
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(courseColor(for: course))
+                                    .frame(width: 10, height: 10)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(course.courseCode ?? course.name)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(isHidden ? et.textMuted : Color.primary)
+                                    Text(course.name)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(et.textMuted)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: isHidden ? "eye.slash" : "eye")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(isHidden ? et.textFaint : et.accent)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(isHidden ? et.pillBg : Color.clear)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if course.id != store.courses.last?.id {
+                            Divider().padding(.leading, 42)
+                        }
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+        }
+        .frame(width: 360, height: min(CGFloat(store.courses.count) * 56 + 120, 500))
     }
 }
 

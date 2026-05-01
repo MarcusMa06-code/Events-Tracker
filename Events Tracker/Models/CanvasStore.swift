@@ -24,12 +24,14 @@ final class CanvasStore: ObservableObject {
     @Published var isSyncing = false
     @Published var errorMessage: String?
     @Published var pinnedTaskIDs: Set<String>
+    @Published var hiddenCourseIDs: Set<Int>
 
     private let configManager: CanvasConfigManager
     private let databaseManager: DatabaseManager
     private let networkManager: NetworkManager
     private let relativeFormatter = RelativeDateTimeFormatter()
     private let pinnedKey = "pinnedTaskIDs"
+    private let hiddenCoursesKey = "hiddenCourseIDs"
 
     init(
         configManager: CanvasConfigManager = .shared,
@@ -48,6 +50,11 @@ final class CanvasStore: ObservableObject {
             pinnedTaskIDs = Set(saved)
         } else {
             pinnedTaskIDs = []
+        }
+        if let saved = UserDefaults.standard.array(forKey: "hiddenCourseIDs") as? [Int] {
+            hiddenCourseIDs = Set(saved)
+        } else {
+            hiddenCourseIDs = []
         }
 
         if let snapshot = databaseManager.loadSnapshot() {
@@ -155,7 +162,7 @@ final class CanvasStore: ObservableObject {
             loadingCourseModuleIDs = []
             try databaseManager.saveSnapshot(snapshot)
         } catch {
-            errorMessage = error.localizedDescription
+            if !isCancellation(error) { errorMessage = error.localizedDescription }
         }
 
         isSyncing = false
@@ -265,6 +272,19 @@ final class CanvasStore: ObservableObject {
         UserDefaults.standard.set(Array(pinnedTaskIDs), forKey: pinnedKey)
     }
 
+    var visibleCourses: [Course] {
+        courses.filter { !hiddenCourseIDs.contains($0.id) }
+    }
+
+    func toggleCourseVisibility(_ courseID: Int) {
+        if hiddenCourseIDs.contains(courseID) {
+            hiddenCourseIDs.remove(courseID)
+        } else {
+            hiddenCourseIDs.insert(courseID)
+        }
+        UserDefaults.standard.set(Array(hiddenCourseIDs), forKey: hiddenCoursesKey)
+    }
+
     var overdueCount: Int {
         let now = Date()
         let cal = Calendar.current
@@ -368,7 +388,7 @@ final class CanvasStore: ObservableObject {
             let assignments = try await networkManager.fetchAssignments(courseID: courseID, using: config)
             courseAssignmentsByCourseID[courseID] = assignments
         } catch {
-            errorMessage = error.localizedDescription
+            if !isCancellation(error) { errorMessage = error.localizedDescription }
         }
 
         loadingCourseAssignmentIDs.remove(courseID)
@@ -414,10 +434,16 @@ final class CanvasStore: ObservableObject {
             let modules = try await networkManager.fetchModules(courseID: courseID, using: config)
             courseModulesByCourseID[courseID] = modules
         } catch {
-            errorMessage = error.localizedDescription
+            if !isCancellation(error) { errorMessage = error.localizedDescription }
         }
 
         loadingCourseModuleIDs.remove(courseID)
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        (error as? URLError)?.code == .cancelled
+            || (error as NSError).code == NSURLErrorCancelled
+            || error is CancellationError
     }
 
     private func applySnapshot(_ snapshot: CanvasSnapshot) {

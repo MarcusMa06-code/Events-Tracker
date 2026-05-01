@@ -23,11 +23,13 @@ final class CanvasStore: ObservableObject {
     @Published var selectedCourseID: Int?
     @Published var isSyncing = false
     @Published var errorMessage: String?
+    @Published var pinnedTaskIDs: Set<String>
 
     private let configManager: CanvasConfigManager
     private let databaseManager: DatabaseManager
     private let networkManager: NetworkManager
     private let relativeFormatter = RelativeDateTimeFormatter()
+    private let pinnedKey = "pinnedTaskIDs"
 
     init(
         configManager: CanvasConfigManager = .shared,
@@ -40,6 +42,13 @@ final class CanvasStore: ObservableObject {
 
         let savedConfig = configManager.loadConfig()
         config = savedConfig
+
+        // Initialize pinned IDs before snapshot loading
+        if let saved = UserDefaults.standard.array(forKey: "pinnedTaskIDs") as? [String] {
+            pinnedTaskIDs = Set(saved)
+        } else {
+            pinnedTaskIDs = []
+        }
 
         if let snapshot = databaseManager.loadSnapshot() {
             courses = snapshot.courses
@@ -215,6 +224,92 @@ final class CanvasStore: ObservableObject {
         }
 
         return missingSubmissions.filter { $0.courseID == courseID }
+    }
+
+    // MARK: - Unified Tasks (for redesigned Dashboard + Events views)
+
+    func unifiedTasks(courseID: Int? = nil) -> [UnifiedTask] {
+        var tasks: [UnifiedTask] = []
+
+        for event in upcomingEvents {
+            if let cid = courseID, event.courseID != cid { continue }
+            var task = UnifiedTask(from: event)
+            task.isPinned = pinnedTaskIDs.contains(task.id)
+            tasks.append(task)
+        }
+
+        for missing in missingSubmissions {
+            if let cid = courseID, missing.courseID != cid { continue }
+            let evtID = "evt-\(missing.id)"
+            if tasks.contains(where: { $0.id == evtID }) { continue }
+            var task = UnifiedTask(from: missing)
+            task.isPinned = pinnedTaskIDs.contains(task.id)
+            tasks.append(task)
+        }
+
+        tasks.sort { a, b in
+            let da = a.dueDate ?? .distantFuture
+            let db = b.dueDate ?? .distantFuture
+            return da < db
+        }
+
+        return tasks
+    }
+
+    func togglePin(_ taskID: String) {
+        if pinnedTaskIDs.contains(taskID) {
+            pinnedTaskIDs.remove(taskID)
+        } else {
+            pinnedTaskIDs.insert(taskID)
+        }
+        UserDefaults.standard.set(Array(pinnedTaskIDs), forKey: pinnedKey)
+    }
+
+    var overdueCount: Int {
+        let now = Date()
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: now)
+        let overdueMissing = missingSubmissions.count
+        let overdueEvents = upcomingEvents.filter { event in
+            guard let d = event.displayDate else { return false }
+            return cal.startOfDay(for: d) < todayStart
+        }.count
+        return overdueMissing + overdueEvents
+    }
+
+    var todayTaskCount: Int {
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: Date())
+        guard let todayEnd = cal.date(byAdding: .day, value: 1, to: todayStart) else { return 0 }
+        return upcomingEvents.filter { event in
+            guard let d = event.displayDate else { return false }
+            return d >= todayStart && d < todayEnd
+        }.count
+    }
+
+    var thisWeekTaskCount: Int {
+        let cal = Calendar.current
+        let now = Date()
+        guard let weekEnd = cal.date(byAdding: .day, value: 7, to: now) else { return 0 }
+        let events = upcomingEvents.filter { event in
+            guard let d = event.displayDate else { return false }
+            return d >= now && d <= weekEnd
+        }.count
+        return events + missingSubmissions.count
+    }
+
+    var upcomingExamCount: Int {
+        upcomingEvents.filter { event in
+            let lower = event.title.lowercased()
+            guard let d = event.displayDate, d >= Date() else { return false }
+            return lower.contains("exam") || lower.contains("final") || lower.contains("midterm")
+        }.count
+    }
+
+    func taskCount(for courseID: Int) -> Int {
+        let events = upcomingEvents.filter { $0.courseID == courseID }.count
+        let missing = missingSubmissions.filter { $0.courseID == courseID }.count
+        return events + missing
     }
 
     func modules(for courseID: Int?) -> [CourseModule] {

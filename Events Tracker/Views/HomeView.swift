@@ -256,6 +256,182 @@ private struct BoardColumn: View {
     }
 }
 
+// MARK: - Focused Task View (Overdue / Today full-width)
+
+enum FocusMode { case overdue, today }
+
+struct FocusedTaskView: View {
+    let mode: FocusMode
+    @EnvironmentObject private var store: CanvasStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let et = ETColors(colorScheme: colorScheme)
+        let allTasks = store.unifiedTasks(courseID: store.selectedCourseID)
+
+        let tasks: [UnifiedTask]
+        let title: String
+        let tone: Color
+        let emptyMsg: String
+
+        switch mode {
+        case .overdue:
+            tasks = allTasks.filter { $0.bucket == .overdue }
+            title = "Overdue"
+            tone = et.urgent
+            emptyMsg = "Nothing overdue. You're all caught up! 🎉"
+        case .today:
+            tasks = allTasks.filter { $0.bucket == .today }
+            title = "Today"
+            tone = et.warn
+            emptyMsg = "Nothing due today. Enjoy your day!"
+        }
+
+        return VStack(spacing: 0) {
+            // Header bar
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(tone)
+                Text("\(tasks.count) item\(tasks.count == 1 ? "" : "s")")
+                    .font(.system(size: 13))
+                    .foregroundStyle(et.textMuted)
+                if mode == .today {
+                    Spacer()
+                    Text(todayLabel)
+                        .font(.system(size: 13))
+                        .foregroundStyle(et.textFaint)
+                } else {
+                    Spacer()
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 20)
+            .padding(.bottom, 12)
+
+            et.hairline.frame(height: 1)
+
+            if tasks.isEmpty {
+                Spacer()
+                Text(emptyMsg)
+                    .font(.system(size: 14))
+                    .foregroundStyle(et.textMuted)
+                    .multilineTextAlignment(.center)
+                    .padding(40)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(tasks) { task in
+                            let course = store.courses.first { $0.id == task.courseID }
+                            FocusedTaskRow(task: task, course: course, et: et) {
+                                store.togglePin(task.id)
+                            }
+                            et.hairline.frame(height: 1)
+                                .padding(.leading, 20)
+                        }
+                    }
+                    .padding(.bottom, 24)
+                }
+            }
+        }
+    }
+
+    private var todayLabel: String {
+        let f = DateFormatter()
+        f.dateFormat = "EEEE, MMMM d"
+        return f.string(from: Date())
+    }
+}
+
+private struct FocusedTaskRow: View {
+    let task: UnifiedTask
+    let course: Course?
+    let et: ETColors
+    let onPin: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        let cColor = course.map { courseColor(for: $0) } ?? Color.secondary
+        let overdue = task.bucket == .overdue
+        let cdColor: Color = overdue ? et.urgent : et.warn
+
+        HStack(alignment: .center, spacing: 0) {
+            // Color rail
+            cColor.opacity(0.85)
+                .frame(width: 4)
+                .padding(.vertical, 10)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if task.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(et.warn)
+                    }
+                    Text(task.title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.primary)
+                    if task.kind == .exam { ExamBadge(et: et) }
+                    TaskStatusPillView(status: task.status, et: et)
+                }
+                HStack(spacing: 10) {
+                    if let course { CourseChipView(course: course) }
+                    if let due = task.dueDate {
+                        HStack(spacing: 4) {
+                            Image(systemName: "clock")
+                                .font(.system(size: 11))
+                                .foregroundStyle(et.textMuted)
+                            Text("\(shortDayName(due)) \(shortDate(due)) · \(shortTime(due))")
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(et.textMuted)
+                        }
+                    }
+                    if let pts = task.points {
+                        Text("\(Int(pts)) pts")
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(et.textFaint)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 6) {
+                if let due = task.dueDate {
+                    Text(overdue ? countdownText(to: due) + " ago" : countdownText(to: due))
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
+                        .foregroundStyle(cdColor)
+                }
+                HStack(spacing: 4) {
+                    ActionButton(
+                        systemImage: task.isPinned ? "star.fill" : "star",
+                        label: task.isPinned ? "Unpin" : "Pin",
+                        active: task.isPinned, et: et, action: onPin
+                    )
+                    if let url = task.htmlURL {
+                        Link(destination: url) {
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.system(size: 13))
+                                .foregroundStyle(et.textMuted)
+                                .frame(width: 26, height: 26)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open in Canvas")
+                    }
+                }
+                .opacity(isHovered ? 1 : 0.45)
+            }
+            .padding(.trailing, 20)
+        }
+        .background(isHovered ? et.rowHover : Color.clear)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.1), value: isHovered)
+    }
+}
+
 // MARK: - Home View (Triage Board)
 
 struct HomeView: View {
